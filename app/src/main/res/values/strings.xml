@@ -1,0 +1,4 @@
+<resources>
+    <string name="app_name">Desk Companion</string>
+    <string name="accessibility_description">Desk Sentry Companion Guard service to prevent device tampering and bypass during active enforcement.</string>
+</resources>
