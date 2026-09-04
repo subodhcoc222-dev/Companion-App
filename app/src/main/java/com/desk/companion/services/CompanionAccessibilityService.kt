@@ -1,19 +1,12 @@
 package com.desk.companion.services
 
 import android.accessibilityservice.AccessibilityService
-import android.app.admin.DevicePolicyManager
-import android.content.Context
+import android.content.Intent
 import android.view.accessibility.AccessibilityEvent
+import android.view.accessibility.AccessibilityNodeInfo
 import com.desk.companion.utils.PreferenceHelper
 
 class CompanionAccessibilityService : AccessibilityService() {
-
-    private var dpm: DevicePolicyManager? = null
-
-    override fun onServiceConnected() {
-        super.onServiceConnected()
-        dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
@@ -33,7 +26,7 @@ class CompanionAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 2. Kill Samsung / Vivo / Stock Power Dialogs
+        // 2. Intercept Samsung, Vivo & Stock Android Power Menus
         val isPowerMenu = pkgName.contains("globalactions") ||
                 pkgName.contains("globalaction") ||
                 pkgName.contains("shutdown") ||
@@ -41,12 +34,30 @@ class CompanionAccessibilityService : AccessibilityService() {
                 className.contains("powerdialog") ||
                 className.contains("shutdown")
 
-        if (isPowerMenu) {
+        if (isPowerMenu || inspectNodeForPowerKeywords(rootInActiveWindow)) {
             performGlobalAction(GLOBAL_ACTION_BACK)
-            try {
-                dpm?.lockNow()
-            } catch (_: Exception) {}
+            performGlobalAction(GLOBAL_ACTION_HOME)
+
+            val overlayIntent = Intent(context, KioskOverlayService::class.java)
+            context.startService(overlayIntent)
         }
+    }
+
+    private fun inspectNodeForPowerKeywords(node: AccessibilityNodeInfo?): Boolean {
+        if (node == null) return false
+        val text = node.text?.toString()?.lowercase() ?: ""
+        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
+
+        if (text.contains("power off") || text.contains("restart") || text.contains("reboot") ||
+            text.contains("switch off") || text.contains("emergency mode") ||
+            desc.contains("power off") || desc.contains("restart")) {
+            return true
+        }
+
+        for (i in 0 until node.childCount) {
+            if (inspectNodeForPowerKeywords(node.getChild(i))) return true
+        }
+        return false
     }
 
     override fun onInterrupt() {}
