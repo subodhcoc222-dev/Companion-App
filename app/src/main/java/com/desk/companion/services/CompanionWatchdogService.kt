@@ -69,7 +69,7 @@ class CompanionWatchdogService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Desk Sentry Companion")
             .setContentText(status)
-            .setSmallIcon(android.R.drawable.ic_lock_lock)
+            .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
@@ -94,14 +94,14 @@ class CompanionWatchdogService : Service() {
                     cancelGracePeriod()
                 } else {
                     isNetworkValidated = false
-                    startGracePeriod(300_000L, "Local internet connection dropped (Packets Dead)") // 5 Minutes Buffer
+                    startGracePeriod(300_000L, "Local internet connection dropped (Packets Dead)")
                 }
             }
 
             override fun onLost(network: Network) {
                 isInterfaceEnabled = false
                 isNetworkValidated = false
-                startGracePeriod(60_000L, "Companion Wi-Fi / Mobile Data turned OFF") // 60 Seconds Buffer
+                startGracePeriod(60_000L, "Companion Wi-Fi / Mobile Data turned OFF")
             }
         }
 
@@ -141,7 +141,6 @@ class CompanionWatchdogService : Service() {
                 } else if (status == "OFFLINE") {
                     triggerLockdown("Camera Phone Status set to OFFLINE!")
                 } else {
-                    // Conditions recovered: auto dismiss
                     if (PreferenceHelper.isLockdownActive(this@CompanionWatchdogService)) {
                         dismissLockdown(this@CompanionWatchdogService)
                     }
@@ -157,7 +156,7 @@ class CompanionWatchdogService : Service() {
     private fun startHeartbeatWatchdogLoop() {
         serviceScope.launch {
             while (isActive) {
-                delay(15_000) // Check every 15 seconds
+                delay(15_000)
                 if (!PreferenceHelper.isArmed(this@CompanionWatchdogService)) continue
 
                 val deviceId = PreferenceHelper.getPairedDeviceId(this@CompanionWatchdogService)
@@ -169,7 +168,6 @@ class CompanionWatchdogService : Service() {
                             val lastHb = snap.getValue(Long::class.java) ?: 0L
                             val currentTime = System.currentTimeMillis()
 
-                            // Dead Man's Switch: If no heartbeat in 45 seconds -> Sentry Phone Dead
                             if (lastHb > 0 && (currentTime - lastHb) > 45_000) {
                                 triggerLockdown("Dead Man's Switch: Camera Phone Powered Off or No Signal!")
                             }
