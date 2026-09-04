@@ -14,16 +14,12 @@ import android.provider.Settings
 import android.text.InputType
 import android.util.Base64
 import android.view.Gravity
-import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
-import androidx.recyclerview.widget.LinearLayoutManager
-import com.desk.companion.adapters.EventLogAdapter
-import com.desk.companion.adapters.SentryEvent
 import com.desk.companion.databinding.ActivityMainBinding
 import com.desk.companion.receivers.CompanionDeviceAdminReceiver
 import com.desk.companion.services.CompanionWatchdogService
@@ -37,11 +33,7 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var isSwitchProgrammatic = false
-    private var firebaseTelemetryListener: ValueEventListener? = null
-    private var firebaseEventsListener: ValueEventListener? = null
-
-    private val eventList = mutableListOf<SentryEvent>()
-    private lateinit var eventAdapter: EventLogAdapter
+    private var firebaseListener: ValueEventListener? = null
 
     private val ringtonePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -65,20 +57,9 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
-        setupEventsRecyclerView()
         checkInitialSetup()
         setupUI()
         observeFirebase()
-    }
-
-    private fun setupEventsRecyclerView() {
-        eventAdapter = EventLogAdapter(eventList)
-        val layoutManager = LinearLayoutManager(this).apply {
-            reverseLayout = true
-            stackFromEnd = true
-        }
-        binding.rvEventsLog.layoutManager = layoutManager
-        binding.rvEventsLog.adapter = eventAdapter
     }
 
     private fun checkInitialSetup() {
@@ -98,6 +79,7 @@ class MainActivity : AppCompatActivity() {
         binding.tvPairedId.text = if (pairedId.isNotEmpty()) "Paired Sentry: #$pairedId" else "Not Paired"
         binding.tvAlarmTitle.text = PreferenceHelper.getCustomAlarmTitle(this)
 
+        // Master Switch Arm/Disarm Engine
         binding.switchMaster.setOnCheckedChangeListener { _, isChecked ->
             if (isSwitchProgrammatic) return@setOnCheckedChangeListener
 
@@ -112,6 +94,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Open Event Logs Screen (Date list -> Day report drill-down)
+        binding.btnOpenEventLogs.setOnClickListener {
+            startActivity(Intent(this, EventLogActivity::class.java))
+        }
+
+        // Security Configuration Buttons
         binding.btnChangePin.setOnClickListener {
             showVerifyCurrentPinDialog {
                 showSetPinDialog(isFirstTime = false)
@@ -124,6 +112,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // Ringtone Picker
         binding.btnChangeAlarm.setOnClickListener {
             val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
                 putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALARM)
@@ -138,6 +127,7 @@ class MainActivity : AppCompatActivity() {
             ringtonePickerLauncher.launch(intent)
         }
 
+        // Remote Camera Snapshot Trigger
         binding.btnRequestSnap.setOnClickListener {
             val deviceId = PreferenceHelper.getPairedDeviceId(this)
             if (deviceId.isNotEmpty()) {
@@ -150,6 +140,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
+        // System Permissions Check
         binding.btnPermissions.setOnClickListener {
             checkAndRequestSystemPermissions()
         }
@@ -184,9 +175,9 @@ class MainActivity : AppCompatActivity() {
 
         val ref = FirebaseDatabase.getInstance().getReference("desk_sentry").child(deviceId)
 
-        // 1. Telemetry & Snapshot Listener
-        firebaseTelemetryListener?.let { ref.removeEventListener(it) }
-        firebaseTelemetryListener = object : ValueEventListener {
+        firebaseListener?.let { ref.removeEventListener(it) }
+
+        firebaseListener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val status = snapshot.child("status").getValue(String::class.java) ?: "OFFLINE"
                 val battery = snapshot.child("battery_level").getValue(Int::class.java) ?: 0
@@ -217,43 +208,8 @@ class MainActivity : AppCompatActivity() {
 
             override fun onCancelled(error: DatabaseError) {}
         }
-        ref.addValueEventListener(firebaseTelemetryListener!!)
 
-        // 2. Real-Time Events Log Listener
-        val eventsRef = ref.child("events").limitToLast(30)
-        firebaseEventsListener?.let { eventsRef.removeEventListener(it) }
-        firebaseEventsListener = object : ValueEventListener {
-            override fun onDataChange(snapshot: DataSnapshot) {
-                eventList.clear()
-                for (child in snapshot.children) {
-                    val title = child.child("title").getValue(String::class.java)
-                        ?: child.child("event").getValue(String::class.java)
-                        ?: "Sentry Alert"
-                    val desc = child.child("description").getValue(String::class.java)
-                        ?: child.child("message").getValue(String::class.java)
-                        ?: ""
-                    val ts = child.child("timestamp").getValue(Long::class.java) ?: 0L
-                    val severity = child.child("severity").getValue(String::class.java)
-                        ?: child.child("type").getValue(String::class.java)
-                        ?: "INFO"
-
-                    eventList.add(SentryEvent(title, desc, ts, severity))
-                }
-
-                if (eventList.isEmpty()) {
-                    binding.tvNoEvents.visibility = View.VISIBLE
-                    binding.rvEventsLog.visibility = View.GONE
-                } else {
-                    binding.tvNoEvents.visibility = View.GONE
-                    binding.rvEventsLog.visibility = View.VISIBLE
-                    eventAdapter.notifyDataSetChanged()
-                    binding.rvEventsLog.scrollToPosition(eventList.size - 1)
-                }
-            }
-
-            override fun onCancelled(error: DatabaseError) {}
-        }
-        eventsRef.addValueEventListener(firebaseEventsListener!!)
+        ref.addValueEventListener(firebaseListener!!)
     }
 
     private fun showSetPinDialog(isFirstTime: Boolean) {
@@ -403,10 +359,8 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         val id = PreferenceHelper.getPairedDeviceId(this)
-        if (id.isNotEmpty()) {
-            val ref = FirebaseDatabase.getInstance().getReference("desk_sentry").child(id)
-            firebaseTelemetryListener?.let { ref.removeEventListener(it) }
-            firebaseEventsListener?.let { ref.child("events").removeEventListener(it) }
+        if (id.isNotEmpty() && firebaseListener != null) {
+            FirebaseDatabase.getInstance().getReference("desk_sentry").child(id).removeEventListener(firebaseListener!!)
         }
     }
 }
