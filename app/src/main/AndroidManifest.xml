@@ -7,7 +7,6 @@
     <uses-permission android:name="android.permission.ACCESS_WIFI_STATE" />
     <uses-permission android:name="android.permission.WAKE_LOCK" />
     <uses-permission android:name="android.permission.VIBRATE" />
-    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT" />
 
     <uses-permission android:name="android.permission.SYSTEM_ALERT_WINDOW" />
     <uses-permission android:name="android.permission.RECEIVE_BOOT_COMPLETED" />
@@ -36,23 +35,14 @@
             </intent-filter>
         </activity>
 
+        <!-- Sentry Event Log Activity (Dates -> Daily Slot Reports) -->
         <activity
             android:name=".EventLogActivity"
             android:configChanges="orientation|screenSize|screenLayout"
             android:exported="false"
             android:parentActivityName=".MainActivity" />
 
-        <!-- Lockscreen Alarm Activity -->
-        <activity
-            android:name=".LockdownActivity"
-            android:showWhenLocked="true"
-            android:turnScreenOn="true"
-            android:showOnLockScreen="true"
-            android:launchMode="singleInstance"
-            android:excludeFromRecents="true"
-            android:exported="false"
-            android:configChanges="orientation|screenSize|screenLayout" />
-
+        <!-- 24/7 Watchdog Service -->
         <service
             android:name=".services.CompanionWatchdogService"
             android:enabled="true"
@@ -63,6 +53,13 @@
                 android:value="Real-time watchdog synchronization and tamper lockdown system" />
         </service>
 
+        <!-- Unclosable Black Overlay & Siren Service -->
+        <service
+            android:name=".services.KioskOverlayService"
+            android:enabled="true"
+            android:exported="false" />
+
+        <!-- Accessibility Power & Settings Interceptor -->
         <service
             android:name=".services.CompanionAccessibilityService"
             android:permission="android.permission.BIND_ACCESSIBILITY_SERVICE"
