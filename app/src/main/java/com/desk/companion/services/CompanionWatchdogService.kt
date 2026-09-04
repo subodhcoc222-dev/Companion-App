@@ -3,7 +3,10 @@ package com.desk.companion.services
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
+import android.app.PendingIntent
 import android.app.Service
+import android.app.admin.DevicePolicyManager
+import android.content.ComponentName
 import android.content.Context
 import android.content.Intent
 import android.net.ConnectivityManager
@@ -12,7 +15,10 @@ import android.net.NetworkCapabilities
 import android.net.NetworkRequest
 import android.os.Build
 import android.os.IBinder
+import android.os.PowerManager
 import androidx.core.app.NotificationCompat
+import com.desk.companion.LockdownActivity
+import com.desk.companion.receivers.CompanionDeviceAdminReceiver
 import com.desk.companion.utils.PreferenceHelper
 import com.google.firebase.database.DataSnapshot
 import com.google.firebase.database.DatabaseError
@@ -33,11 +39,15 @@ class CompanionWatchdogService : Service() {
 
     companion object {
         private const val CHANNEL_ID = "desk_companion_watchdog_channel"
+        private const val ALARM_CHANNEL_ID = "desk_companion_lockdown_channel"
         private const val NOTIF_ID = 2001
+        private const val ALARM_NOTIF_ID = 9001
 
         fun dismissLockdown(context: Context) {
             PreferenceHelper.setLockdownActive(context, false)
-            context.stopService(Intent(context, KioskOverlayService::class.java))
+            context.sendBroadcast(Intent("com.desk.companion.DISMISS_LOCKDOWN"))
+            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.cancel(ALARM_NOTIF_ID)
         }
     }
 
@@ -45,7 +55,7 @@ class CompanionWatchdogService : Service() {
 
     override fun onCreate() {
         super.onCreate()
-        createNotificationChannel()
+        createNotificationChannels()
         startForeground(NOTIF_ID, buildForegroundNotification("Guard Active: Sentry Connected"))
 
         startNetworkMonitoring()
@@ -53,15 +63,27 @@ class CompanionWatchdogService : Service() {
         startHeartbeatWatchdogLoop()
     }
 
-    private fun createNotificationChannel() {
+    private fun createNotificationChannels() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            val manager = getSystemService(NotificationManager::class.java)
+
             val channel = NotificationChannel(
                 CHANNEL_ID,
                 "Desk Companion Watchdog",
                 NotificationManager.IMPORTANCE_LOW
             )
-            val manager = getSystemService(NotificationManager::class.java)
             manager.createNotificationChannel(channel)
+
+            val alarmChannel = NotificationChannel(
+                ALARM_CHANNEL_ID,
+                "Desk Breach Alarm",
+                NotificationManager.IMPORTANCE_HIGH
+            ).apply {
+                description = "Triggers immediately on lockscreen during security breach"
+                setBypassDnd(true)
+                lockscreenVisibility = Notification.VISIBILITY_PUBLIC
+            }
+            manager.createNotificationChannel(alarmChannel)
         }
     }
 
@@ -76,7 +98,6 @@ class CompanionWatchdogService : Service() {
     }
 
     private fun startNetworkMonitoring() {
-        // Correct Android API Constant: CONNECTIVITY_SERVICE
         connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         val request = NetworkRequest.Builder()
@@ -179,11 +200,65 @@ class CompanionWatchdogService : Service() {
     }
 
     private fun triggerLockdown(reason: String) {
+        if (PreferenceHelper.isLockdownActive(this)) return
+
         PreferenceHelper.setLockdownActive(this, true)
         PreferenceHelper.setLockdownReason(this, reason)
 
-        val overlayIntent = Intent(this, KioskOverlayService::class.java)
-        startService(overlayIntent)
+        // 1. FORCE INSTANT HARD-LOCK VIA DEVICE ADMIN
+        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+        val adminComponent = ComponentName(this, CompanionDeviceAdminReceiver::class.java)
+        if (dpm.isAdminActive(adminComponent)) {
+            try {
+                dpm.lockNow()
+            } catch (_: Exception) {}
+        }
+
+        // 2. Launch Alarm on Secure Keyguard after 250ms transition
+        serviceScope.launch {
+            delay(250)
+
+            val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+            @Suppress("DEPRECATION")
+            val wakeLock = pm.newWakeLock(
+                PowerManager.SCREEN_BRIGHT_WAKE_LOCK or
+                PowerManager.ACQUIRE_CAUSES_WAKEUP or
+                PowerManager.ON_AFTER_RELEASE,
+                "DeskCompanion:AlarmWakeLock"
+            )
+            wakeLock.acquire(10_000L)
+
+            val intent = Intent(this@CompanionWatchdogService, LockdownActivity::class.java).apply {
+                flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_REORDER_TO_FRONT
+                putExtra("reason", reason)
+            }
+
+            val pendingIntent = PendingIntent.getActivity(
+                this@CompanionWatchdogService,
+                0,
+                intent,
+                PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+            )
+
+            val alarmNotif = NotificationCompat.Builder(this@CompanionWatchdogService, ALARM_CHANNEL_ID)
+                .setSmallIcon(android.R.drawable.stat_notify_sync)
+                .setContentTitle("🚨 SENTRY BREACH DETECTED!")
+                .setContentText(reason)
+                .setPriority(NotificationCompat.PRIORITY_MAX)
+                .setCategory(NotificationCompat.CATEGORY_ALARM)
+                .setFullScreenIntent(pendingIntent, true)
+                .setVisibility(NotificationCompat.VISIBILITY_PUBLIC)
+                .setAutoCancel(false)
+                .setOngoing(true)
+                .build()
+
+            val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+            nm.notify(ALARM_NOTIF_ID, alarmNotif)
+
+            try {
+                startActivity(intent)
+            } catch (_: Exception) {}
+        }
     }
 
     override fun onDestroy() {
@@ -196,6 +271,5 @@ class CompanionWatchdogService : Service() {
                 FirebaseDatabase.getInstance().getReference("desk_sentry").child(id).removeEventListener(it)
             }
         }
-        stopService(Intent(this, KioskOverlayService::class.java))
     }
 }
