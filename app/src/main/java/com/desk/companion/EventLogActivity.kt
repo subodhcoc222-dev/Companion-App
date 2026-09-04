@@ -12,21 +12,37 @@ import androidx.recyclerview.widget.RecyclerView
 import com.desk.companion.adapters.EventLogAdapter
 import com.desk.companion.adapters.SentryEvent
 import com.desk.companion.databinding.ActivityEventLogBinding
+import com.desk.companion.databinding.ItemSlotCardBinding
 import com.desk.companion.utils.PreferenceHelper
 import com.google.firebase.database.*
-import java.text.SimpleDateFormat
-import java.util.Date
+import org.json.JSONObject
 import java.util.Locale
+
+data class SlotData(
+    val slotNumber: Int,
+    val presentSec: Long = 0L,
+    val absentSec: Long = 0L,
+    val officialBreakSec: Long = 0L
+)
+
+data class DayReport(
+    val date: String,
+    val dayName: String,
+    val slots: Map<Int, SlotData>,
+    val totalStudySec: Long,
+    val totalBreakSec: Long,
+    val totalAbsentSec: Long
+)
 
 class EventLogActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityEventLogBinding
-    private var eventsRef: DatabaseReference? = null
-    private var listener: ValueEventListener? = null
+    private var sentryRef: DatabaseReference? = null
+    private var rootListener: ValueEventListener? = null
 
-    // Date -> List of Events mapping
-    private val groupedEvents = linkedMapOf<String, MutableList<SentryEvent>>()
-    private val dateKeys = mutableListOf<String>()
+    private val dayReportsMap = linkedMapOf<String, DayReport>()
+    private val securityLogsMap = linkedMapOf<String, MutableList<SentryEvent>>()
+    private val availableDates = mutableListOf<String>()
 
     private var selectedDate: String? = null
 
@@ -36,16 +52,16 @@ class EventLogActivity : AppCompatActivity() {
         setContentView(binding.root)
 
         binding.rvDateList.layoutManager = LinearLayoutManager(this)
-        binding.rvDayEvents.layoutManager = LinearLayoutManager(this)
+        binding.rvSecurityLogs.layoutManager = LinearLayoutManager(this)
 
         binding.btnBack.setOnClickListener {
             handleBackPress()
         }
 
-        loadFirebaseEvents()
+        loadAllDataFromFirebase()
     }
 
-    private fun loadFirebaseEvents() {
+    private fun loadAllDataFromFirebase() {
         val deviceId = PreferenceHelper.getPairedDeviceId(this)
         if (deviceId.isEmpty()) {
             binding.tvEmptyState.visibility = View.VISIBLE
@@ -53,38 +69,83 @@ class EventLogActivity : AppCompatActivity() {
             return
         }
 
-        eventsRef = FirebaseDatabase.getInstance().getReference("desk_sentry").child(deviceId).child("events")
+        sentryRef = FirebaseDatabase.getInstance().getReference("desk_sentry").child(deviceId)
 
-        listener = object : ValueEventListener {
+        rootListener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
-                groupedEvents.clear()
-                dateKeys.clear()
+                dayReportsMap.clear()
+                securityLogsMap.clear()
+                availableDates.clear()
 
-                for (child in snapshot.children) {
-                    val title = child.child("title").getValue(String::class.java)
-                        ?: child.child("event").getValue(String::class.java)
-                        ?: "Sentry Alert"
-                    val desc = child.child("description").getValue(String::class.java)
-                        ?: child.child("message").getValue(String::class.java)
-                        ?: ""
-                    val ts = child.child("timestamp").getValue(Long::class.java) ?: System.currentTimeMillis()
-                    val severity = child.child("severity").getValue(String::class.java)
-                        ?: child.child("type").getValue(String::class.java)
-                        ?: "INFO"
+                // 1. Parse Daily Slot Reports from 'events' node
+                val eventsSnapshot = snapshot.child("events")
+                for (child in eventsSnapshot.children) {
+                    val dateKey = child.key ?: continue
+                    val rawJson = child.getValue(String::class.java) ?: continue
 
-                    val event = SentryEvent(title, desc, ts, severity)
-                    val dateKey = SimpleDateFormat("yyyy-MM-dd", Locale.getDefault()).format(Date(ts))
+                    try {
+                        val json = JSONObject(rawJson)
+                        val dayName = json.optString("dayName", dateKey)
+                        val slotsJson = json.optJSONObject("slots")
 
-                    if (!groupedEvents.containsKey(dateKey)) {
-                        groupedEvents[dateKey] = mutableListOf()
-                    }
-                    groupedEvents[dateKey]?.add(event)
+                        val slotMap = mutableMapOf<Int, SlotData>()
+                        var sumStudy = 0L
+                        var sumBreak = 0L
+                        var sumAbsent = 0L
+
+                        for (i in 1..5) {
+                            val slotObj = slotsJson?.optJSONObject(i.toString())
+                            val pres = slotObj?.optLong("presentSec") ?: 0L
+                            val abs = slotObj?.optLong("absentSec") ?: 0L
+                            val brk = slotObj?.optLong("officialBreakSec") ?: 0L
+
+                            sumStudy += pres
+                            sumBreak += brk
+                            sumAbsent += abs
+
+                            slotMap[i] = SlotData(i, pres, abs, brk)
+                        }
+
+                        dayReportsMap[dateKey] = DayReport(
+                            date = dateKey,
+                            dayName = dayName,
+                            slots = slotMap,
+                            totalStudySec = sumStudy,
+                            totalBreakSec = sumBreak,
+                            totalAbsentSec = sumAbsent
+                        )
+                    } catch (_: Exception) {}
                 }
 
-                // Show newest dates first
-                dateKeys.addAll(groupedEvents.keys.reversed())
+                // 2. Parse Security Tamper Logs from 'security_logs' node
+                val secSnapshot = snapshot.child("security_logs")
+                for (dateChild in secSnapshot.children) {
+                    val dateKey = dateChild.key ?: continue
+                    val list = mutableListOf<SentryEvent>()
 
-                if (dateKeys.isEmpty()) {
+                    for (eventItem in dateChild.children) {
+                        val type = eventItem.child("type").getValue(String::class.java) ?: "SECURITY"
+                        val detail = eventItem.child("detail").getValue(String::class.java) ?: ""
+                        val timeStr = eventItem.child("time").getValue(String::class.java) ?: ""
+                        val ts = eventItem.child("timestamp").getValue(Long::class.java) ?: 0L
+
+                        val isCritical = type.contains("UNPLUGGED") || type.contains("BREACH")
+                        val title = if (type == "CHARGER_UNPLUGGED") "🚨 Power Unplugged" else "⚡ Power Connected"
+
+                        list.add(SentryEvent(
+                            title = "$title ($timeStr)",
+                            description = detail,
+                            timestamp = ts,
+                            severity = if (isCritical) "CRITICAL" else "INFO"
+                        ))
+                    }
+                    securityLogsMap[dateKey] = list
+                }
+
+                // Collect and reverse dates (newest first)
+                availableDates.addAll(dayReportsMap.keys.reversed())
+
+                if (availableDates.isEmpty()) {
                     binding.tvEmptyState.visibility = View.VISIBLE
                     binding.rvDateList.visibility = View.GONE
                 } else {
@@ -100,7 +161,7 @@ class EventLogActivity : AppCompatActivity() {
             override fun onCancelled(error: DatabaseError) {}
         }
 
-        eventsRef?.addValueEventListener(listener!!)
+        sentryRef?.addValueEventListener(rootListener!!)
     }
 
     private fun showDateListView() {
@@ -109,20 +170,71 @@ class EventLogActivity : AppCompatActivity() {
         binding.rvDateList.visibility = View.VISIBLE
         binding.layoutDayReport.visibility = View.GONE
 
-        binding.rvDateList.adapter = DateAdapter(dateKeys, groupedEvents) { date ->
+        binding.rvDateList.adapter = DateSummaryAdapter(availableDates, dayReportsMap) { date ->
             showDayReportView(date)
         }
     }
 
     private fun showDayReportView(date: String) {
         selectedDate = date
-        binding.tvToolbarTitle.text = "Audit: $date"
-        binding.tvSelectedDateHeader.text = "📅 Complete Day Report for $date"
+        val report = dayReportsMap[date] ?: return
+
+        binding.tvToolbarTitle.text = "Audit Report"
         binding.rvDateList.visibility = View.GONE
         binding.layoutDayReport.visibility = View.VISIBLE
 
-        val dayEvents = groupedEvents[date]?.reversed() ?: emptyList()
-        binding.rvDayEvents.adapter = EventLogAdapter(dayEvents)
+        // Header info & 3 Badges
+        binding.tvSelectedDayName.text = report.dayName
+        binding.tvSelectedDateHeader.text = "Date: ${report.date}"
+        binding.tvTotalStudyTime.text = formatDuration(report.totalStudySec)
+        binding.tvTotalBreaks.text = formatDuration(report.totalBreakSec)
+        binding.tvTotalUnexcused.text = formatDuration(report.totalAbsentSec)
+
+        // Populate Slot 1 to 5 Cards
+        binding.layoutSlotsContainer.removeAllViews()
+        val inflater = LayoutInflater.from(this)
+
+        for (i in 1..5) {
+            val slotBinding = ItemSlotCardBinding.inflate(inflater, binding.layoutSlotsContainer, false)
+            val slotData = report.slots[i] ?: SlotData(i)
+
+            slotBinding.tvSlotTitle.text = "SLOT $i"
+            slotBinding.tvSlotStudyTime.text = formatDuration(slotData.presentSec)
+            slotBinding.tvSlotBreakTime.text = formatDuration(slotData.officialBreakSec)
+            slotBinding.tvSlotAbsentTime.text = formatDuration(slotData.absentSec)
+
+            if (slotData.presentSec > 0 || slotData.absentSec > 0 || slotData.officialBreakSec > 0) {
+                slotBinding.tvSlotStatus.text = "Recorded"
+                slotBinding.tvSlotStatus.setTextColor(Color.parseColor("#10B981"))
+            } else {
+                slotBinding.tvSlotStatus.text = "No Activity"
+                slotBinding.tvSlotStatus.setTextColor(Color.parseColor("#64748B"))
+            }
+
+            binding.layoutSlotsContainer.addView(slotBinding.root)
+        }
+
+        // Security Logs List
+        val secLogs = securityLogsMap[date]?.reversed() ?: emptyList()
+        if (secLogs.isEmpty()) {
+            binding.tvNoSecurityLogs.visibility = View.VISIBLE
+            binding.rvSecurityLogs.visibility = View.GONE
+        } else {
+            binding.tvNoSecurityLogs.visibility = View.GONE
+            binding.rvSecurityLogs.visibility = View.VISIBLE
+            binding.rvSecurityLogs.adapter = EventLogAdapter(secLogs)
+        }
+    }
+
+    private fun formatDuration(totalSec: Long): String {
+        val h = totalSec / 3600
+        val m = (totalSec % 3600) / 60
+        val s = totalSec % 60
+        return if (h > 0) {
+            String.format(Locale.getDefault(), "%dh %02dm %02ds", h, m, s)
+        } else {
+            String.format(Locale.getDefault(), "%02dm %02ds", m, s)
+        }
     }
 
     private fun handleBackPress() {
@@ -139,19 +251,19 @@ class EventLogActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        listener?.let { eventsRef?.removeEventListener(it) }
+        rootListener?.let { sentryRef?.removeEventListener(it) }
     }
 
-    // Adapter for Level 1: Date Rows
-    class DateAdapter(
+    // Adapter for Level 1: Date Cards
+    class DateSummaryAdapter(
         private val dates: List<String>,
-        private val eventMap: Map<String, List<SentryEvent>>,
+        private val reports: Map<String, DayReport>,
         private val onClick: (String) -> Unit
-    ) : RecyclerView.Adapter<DateAdapter.DateViewHolder>() {
+    ) : RecyclerView.Adapter<DateSummaryAdapter.DateViewHolder>() {
 
         class DateViewHolder(view: View) : RecyclerView.ViewHolder(view) {
             val tvDate: TextView = view.findViewById(android.R.id.text1)
-            val tvCount: TextView = view.findViewById(android.R.id.text2)
+            val tvSubtitle: TextView = view.findViewById(android.R.id.text2)
         }
 
         override fun onCreateViewHolder(parent: ViewGroup, viewType: Int): DateViewHolder {
@@ -164,15 +276,16 @@ class EventLogActivity : AppCompatActivity() {
 
         override fun onBindViewHolder(holder: DateViewHolder, position: Int) {
             val date = dates[position]
-            val count = eventMap[date]?.size ?: 0
+            val report = reports[date]
 
-            holder.tvDate.text = "📅 $date"
+            holder.tvDate.text = "📅 ${report?.dayName ?: date}"
             holder.tvDate.setTextColor(Color.WHITE)
-            holder.tvDate.textSize = 16f
+            holder.tvDate.textSize = 15f
 
-            holder.tvCount.text = "$count Security Events Logged • Tap to view report →"
-            holder.tvCount.setTextColor(Color.parseColor("#38BDF8"))
-            holder.tvCount.textSize = 13f
+            val studyTime = (report?.totalStudySec ?: 0L) / 60
+            holder.tvSubtitle.text = "Total Study: ${studyTime} mins • Tap to view report →"
+            holder.tvSubtitle.setTextColor(Color.parseColor("#38BDF8"))
+            holder.tvSubtitle.textSize = 12f
 
             holder.itemView.setOnClickListener { onClick(date) }
         }
