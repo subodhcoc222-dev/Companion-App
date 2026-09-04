@@ -10,17 +10,23 @@ import kotlinx.coroutines.*
 
 object SoundManager {
     private var mediaPlayer: MediaPlayer? = null
-    private var beepJob: Job? = null
+    private var alertJob: Job? = null
     private var isPlaying = false
 
     fun startAlertSound(context: Context) {
         if (isPlaying) return
         isPlaying = true
 
+        val audioManager = context.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val maxAlarmVolume = audioManager.getStreamMaxVolume(AudioManager.STREAM_ALARM)
+
+        // 1. Force hardware alarm stream to 100% Maximum Volume
+        audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxAlarmVolume, 0)
+
         val customUriStr = PreferenceHelper.getCustomAlarmUri(context)
 
         if (!customUriStr.isNullOrEmpty()) {
-            // Play user-selected Custom Ringtone
+            // Play Custom System Alarm at Forced 100% Volume
             try {
                 mediaPlayer = MediaPlayer().apply {
                     setDataSource(context, Uri.parse(customUriStr))
@@ -31,26 +37,28 @@ object SoundManager {
                             .build()
                     )
                     isLooping = true
+                    setVolume(1.0f, 1.0f) // 100% Speaker Output
                     prepare()
                     start()
                 }
             } catch (e: Exception) {
-                // Fallback to default beep if media fails
-                startPulseBeep()
+                startMaxBeepLoop(audioManager, maxAlarmVolume)
             }
         } else {
-            // Play default medium frequency alert pulse
-            startPulseBeep()
+            // Play Siren Pulse at Forced 100% Volume
+            startMaxBeepLoop(audioManager, maxAlarmVolume)
         }
     }
 
-    private fun startPulseBeep() {
-        beepJob = CoroutineScope(Dispatchers.Default).launch {
-            val toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 75) // 75% Balanced Volume
+    private fun startMaxBeepLoop(audioManager: AudioManager, maxVol: Int) {
+        alertJob = CoroutineScope(Dispatchers.Default).launch {
+            val toneGen = ToneGenerator(AudioManager.STREAM_ALARM, 100) // 100% Peak Output
             try {
                 while (isActive) {
-                    toneGen.startTone(ToneGenerator.TONE_PROP_BEEP2, 250) // 250ms Alert Pulse
-                    delay(750) // 750ms Rest Interval
+                    // Continuous volume lock: forces volume back to MAX if someone presses volume down
+                    audioManager.setStreamVolume(AudioManager.STREAM_ALARM, maxVol, 0)
+                    toneGen.startTone(ToneGenerator.TONE_CDMA_EMERGENCY_RINGBACK, 400) // Piercing Siren Pulse
+                    delay(800)
                 }
             } catch (_: Exception) {
             } finally {
@@ -61,8 +69,8 @@ object SoundManager {
 
     fun stopAlertSound() {
         isPlaying = false
-        beepJob?.cancel()
-        beepJob = null
+        alertJob?.cancel()
+        alertJob = null
 
         try {
             mediaPlayer?.stop()
