@@ -69,7 +69,7 @@ class CompanionWatchdogService : Service() {
         return NotificationCompat.Builder(this, CHANNEL_ID)
             .setContentTitle("Desk Sentry Companion")
             .setContentText(status)
-            .setSmallIcon(android.R.drawable.ic_lock_idle_lock)
+            .setSmallIcon(android.R.drawable.stat_notify_sync)
             .setOngoing(true)
             .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
