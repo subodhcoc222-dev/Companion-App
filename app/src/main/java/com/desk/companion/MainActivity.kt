@@ -14,12 +14,16 @@ import android.provider.Settings
 import android.text.InputType
 import android.util.Base64
 import android.view.Gravity
+import android.view.View
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
+import androidx.recyclerview.widget.LinearLayoutManager
+import com.desk.companion.adapters.EventLogAdapter
+import com.desk.companion.adapters.SentryEvent
 import com.desk.companion.databinding.ActivityMainBinding
 import com.desk.companion.receivers.CompanionDeviceAdminReceiver
 import com.desk.companion.services.CompanionWatchdogService
@@ -33,7 +37,11 @@ class MainActivity : AppCompatActivity() {
 
     private lateinit var binding: ActivityMainBinding
     private var isSwitchProgrammatic = false
-    private var firebaseListener: ValueEventListener? = null
+    private var firebaseTelemetryListener: ValueEventListener? = null
+    private var firebaseEventsListener: ValueEventListener? = null
+
+    private val eventList = mutableListOf<SentryEvent>()
+    private lateinit var eventAdapter: EventLogAdapter
 
     private val ringtonePickerLauncher = registerForActivityResult(
         ActivityResultContracts.StartActivityForResult()
@@ -57,18 +65,26 @@ class MainActivity : AppCompatActivity() {
         binding = ActivityMainBinding.inflate(layoutInflater)
         setContentView(binding.root)
 
+        setupEventsRecyclerView()
         checkInitialSetup()
         setupUI()
         observeFirebase()
     }
 
+    private fun setupEventsRecyclerView() {
+        eventAdapter = EventLogAdapter(eventList)
+        val layoutManager = LinearLayoutManager(this).apply {
+            reverseLayout = true
+            stackFromEnd = true
+        }
+        binding.rvEventsLog.layoutManager = layoutManager
+        binding.rvEventsLog.adapter = eventAdapter
+    }
+
     private fun checkInitialSetup() {
-        // Step 1: Initial Master PIN creation if not exists
         if (PreferenceHelper.getMasterPin(this) == null) {
             showSetPinDialog(isFirstTime = true)
         }
-
-        // Step 2: Initial Paired Device ID configuration
         if (PreferenceHelper.getPairedDeviceId(this).isEmpty()) {
             showPairDeviceDialog()
         }
@@ -82,38 +98,32 @@ class MainActivity : AppCompatActivity() {
         binding.tvPairedId.text = if (pairedId.isNotEmpty()) "Paired Sentry: #$pairedId" else "Not Paired"
         binding.tvAlarmTitle.text = PreferenceHelper.getCustomAlarmTitle(this)
 
-        // Master Switch Listener
         binding.switchMaster.setOnCheckedChangeListener { _, isChecked ->
             if (isSwitchProgrammatic) return@setOnCheckedChangeListener
 
             if (isChecked) {
-                // One-tap Armed
                 PreferenceHelper.setArmed(this, true)
                 updateMasterSwitchUI(true)
                 startWatchdogService()
                 observeFirebase()
                 Toast.makeText(this, "🛡️ Desk Sentry Armed: 24/7 Guard Active", Toast.LENGTH_SHORT).show()
             } else {
-                // Disarm requires Master PIN
                 showDisarmPinDialog()
             }
         }
 
-        // Change Master PIN button (requires old PIN validation)
         binding.btnChangePin.setOnClickListener {
             showVerifyCurrentPinDialog {
                 showSetPinDialog(isFirstTime = false)
             }
         }
 
-        // Change Paired Device ID button (requires Master PIN validation)
         binding.btnChangeDevice.setOnClickListener {
             showVerifyCurrentPinDialog {
                 showPairDeviceDialog()
             }
         }
 
-        // Custom Ringtone / Beep Picker
         binding.btnChangeAlarm.setOnClickListener {
             val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
                 putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALARM)
@@ -128,7 +138,6 @@ class MainActivity : AppCompatActivity() {
             ringtonePickerLauncher.launch(intent)
         }
 
-        // Snapshot Trigger Button
         binding.btnRequestSnap.setOnClickListener {
             val deviceId = PreferenceHelper.getPairedDeviceId(this)
             if (deviceId.isNotEmpty()) {
@@ -141,7 +150,6 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Permissions Assistant Button
         binding.btnPermissions.setOnClickListener {
             checkAndRequestSystemPermissions()
         }
@@ -176,9 +184,9 @@ class MainActivity : AppCompatActivity() {
 
         val ref = FirebaseDatabase.getInstance().getReference("desk_sentry").child(deviceId)
 
-        firebaseListener?.let { ref.removeEventListener(it) }
-
-        firebaseListener = object : ValueEventListener {
+        // 1. Telemetry & Snapshot Listener
+        firebaseTelemetryListener?.let { ref.removeEventListener(it) }
+        firebaseTelemetryListener = object : ValueEventListener {
             override fun onDataChange(snapshot: DataSnapshot) {
                 val status = snapshot.child("status").getValue(String::class.java) ?: "OFFLINE"
                 val battery = snapshot.child("battery_level").getValue(Int::class.java) ?: 0
@@ -186,7 +194,6 @@ class MainActivity : AppCompatActivity() {
                 val lastHb = snapshot.child("last_heartbeat").getValue(Long::class.java) ?: 0L
                 val base64Snap = snapshot.child("latest_snapshot_base64").getValue(String::class.java)
 
-                // Update Telemetry UI
                 binding.tvSentryStatus.text = "● $status"
                 binding.tvSentryStatus.setTextColor(
                     if (status == "ONLINE") Color.parseColor("#10B981") else Color.parseColor("#EF4444")
@@ -198,7 +205,6 @@ class MainActivity : AppCompatActivity() {
                     binding.tvLastHeartbeat.text = "Last sync: $timeStr"
                 }
 
-                // Decode Base64 Snapshot Image
                 if (!base64Snap.isNullOrEmpty()) {
                     try {
                         val decodedBytes = Base64.decode(base64Snap, Base64.NO_WRAP)
@@ -211,11 +217,45 @@ class MainActivity : AppCompatActivity() {
 
             override fun onCancelled(error: DatabaseError) {}
         }
+        ref.addValueEventListener(firebaseTelemetryListener!!)
 
-        ref.addValueEventListener(firebaseListener!!)
+        // 2. Real-Time Events Log Listener
+        val eventsRef = ref.child("events").limitToLast(30)
+        firebaseEventsListener?.let { eventsRef.removeEventListener(it) }
+        firebaseEventsListener = object : ValueEventListener {
+            override fun onDataChange(snapshot: DataSnapshot) {
+                eventList.clear()
+                for (child in snapshot.children) {
+                    val title = child.child("title").getValue(String::class.java)
+                        ?: child.child("event").getValue(String::class.java)
+                        ?: "Sentry Alert"
+                    val desc = child.child("description").getValue(String::class.java)
+                        ?: child.child("message").getValue(String::class.java)
+                        ?: ""
+                    val ts = child.child("timestamp").getValue(Long::class.java) ?: 0L
+                    val severity = child.child("severity").getValue(String::class.java)
+                        ?: child.child("type").getValue(String::class.java)
+                        ?: "INFO"
+
+                    eventList.add(SentryEvent(title, desc, ts, severity))
+                }
+
+                if (eventList.isEmpty()) {
+                    binding.tvNoEvents.visibility = View.VISIBLE
+                    binding.rvEventsLog.visibility = View.GONE
+                } else {
+                    binding.tvNoEvents.visibility = View.GONE
+                    binding.rvEventsLog.visibility = View.VISIBLE
+                    eventAdapter.notifyDataSetChanged()
+                    binding.rvEventsLog.scrollToPosition(eventList.size - 1)
+                }
+            }
+
+            override fun onCancelled(error: DatabaseError) {}
+        }
+        eventsRef.addValueEventListener(firebaseEventsListener!!)
     }
 
-    // 2-Step PIN Creation / Change Dialog
     private fun showSetPinDialog(isFirstTime: Boolean) {
         val layout = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -336,7 +376,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkAndRequestSystemPermissions() {
-        // 1. Overlay Permission
         if (!Settings.canDrawOverlays(this)) {
             val intent = Intent(
                 Settings.ACTION_MANAGE_OVERLAY_PERMISSION,
@@ -347,7 +386,6 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        // 2. Device Admin Permission
         val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
         val adminComponent = ComponentName(this, CompanionDeviceAdminReceiver::class.java)
         if (!dpm.isAdminActive(adminComponent)) {
@@ -365,8 +403,10 @@ class MainActivity : AppCompatActivity() {
     override fun onDestroy() {
         super.onDestroy()
         val id = PreferenceHelper.getPairedDeviceId(this)
-        if (id.isNotEmpty() && firebaseListener != null) {
-            FirebaseDatabase.getInstance().getReference("desk_sentry").child(id).removeEventListener(firebaseListener!!)
+        if (id.isNotEmpty()) {
+            val ref = FirebaseDatabase.getInstance().getReference("desk_sentry").child(id)
+            firebaseTelemetryListener?.let { ref.removeEventListener(it) }
+            firebaseEventsListener?.let { ref.child("events").removeEventListener(it) }
         }
     }
 }
