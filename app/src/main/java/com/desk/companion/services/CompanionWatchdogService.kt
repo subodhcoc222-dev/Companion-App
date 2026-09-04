@@ -76,7 +76,8 @@ class CompanionWatchdogService : Service() {
     }
 
     private fun startNetworkMonitoring() {
-        connectivityManager = getSystemService(Context.NETWORK_SERVICE) as ConnectivityManager
+        // Correct Android API Constant: CONNECTIVITY_SERVICE
+        connectivityManager = getSystemService(Context.CONNECTIVITY_SERVICE) as ConnectivityManager
 
         val request = NetworkRequest.Builder()
             .addCapability(NetworkCapabilities.NET_CAPABILITY_INTERNET)
