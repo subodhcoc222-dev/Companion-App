@@ -1,24 +1,31 @@
 package com.desk.companion.services
 
 import android.accessibilityservice.AccessibilityService
-import android.content.Intent
+import android.app.admin.DevicePolicyManager
+import android.content.Context
 import android.view.accessibility.AccessibilityEvent
-import android.view.accessibility.AccessibilityNodeInfo
 import com.desk.companion.utils.PreferenceHelper
 
 class CompanionAccessibilityService : AccessibilityService() {
+
+    private var dpm: DevicePolicyManager? = null
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+    }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
         val context = applicationContext
 
-        // Enforce blocks only when Armed and Lockdown is Active
+        // Only enforce while Armed and in Lockdown
         if (!PreferenceHelper.isArmed(context) || !PreferenceHelper.isLockdownActive(context)) {
             return
         }
 
-        val pkgName = event.packageName?.toString() ?: ""
-        val className = event.className?.toString() ?: ""
+        val pkgName = event.packageName?.toString()?.lowercase() ?: ""
+        val className = event.className?.toString()?.lowercase() ?: ""
 
         // 1. Block Settings App
         if (pkgName.contains("com.android.settings") || pkgName.contains("com.samsung.android.settings")) {
@@ -26,42 +33,20 @@ class CompanionAccessibilityService : AccessibilityService() {
             return
         }
 
-        // 2. Intercept Samsung, Vivo & Stock Android Power Menus
-        val isPowerPackage = pkgName.contains("globalactions", ignoreCase = true) ||
-                pkgName.contains("globalaction", ignoreCase = true) ||
-                pkgName.contains("shutdown", ignoreCase = true) ||
-                pkgName.contains("power", ignoreCase = true)
+        // 2. Kill Samsung / Vivo / Stock Power Dialogs
+        val isPowerMenu = pkgName.contains("globalactions") ||
+                pkgName.contains("globalaction") ||
+                pkgName.contains("shutdown") ||
+                className.contains("globalactions") ||
+                className.contains("powerdialog") ||
+                className.contains("shutdown")
 
-        val isPowerClass = className.contains("GlobalActions", ignoreCase = true) ||
-                className.contains("PowerDialog", ignoreCase = true) ||
-                className.contains("ShutdownActivity", ignoreCase = true)
-
-        if (isPowerPackage || isPowerClass || inspectNodeForPowerKeywords(rootInActiveWindow)) {
-            // Instantly dismiss the restart/power menu
+        if (isPowerMenu) {
             performGlobalAction(GLOBAL_ACTION_BACK)
-            performGlobalAction(GLOBAL_ACTION_HOME)
-
-            // Re-assert Overlay on top
-            val overlayIntent = Intent(context, KioskOverlayService::class.java)
-            context.startService(overlayIntent)
+            try {
+                dpm?.lockNow()
+            } catch (_: Exception) {}
         }
-    }
-
-    private fun inspectNodeForPowerKeywords(node: AccessibilityNodeInfo?): Boolean {
-        if (node == null) return false
-        val text = node.text?.toString()?.lowercase() ?: ""
-        val desc = node.contentDescription?.toString()?.lowercase() ?: ""
-
-        if (text.contains("power off") || text.contains("restart") || text.contains("reboot") ||
-            text.contains("switch off") || text.contains("emergency mode") ||
-            desc.contains("power off") || desc.contains("restart")) {
-            return true
-        }
-
-        for (i in 0 until node.childCount) {
-            if (inspectNodeForPowerKeywords(node.getChild(i))) return true
-        }
-        return false
     }
 
     override fun onInterrupt() {}
