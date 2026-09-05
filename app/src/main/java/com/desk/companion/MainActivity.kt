@@ -1,5 +1,6 @@
 package com.desk.companion
 
+import android.app.TimePickerDialog
 import android.app.admin.DevicePolicyManager
 import android.content.ComponentName
 import android.content.Context
@@ -14,6 +15,8 @@ import android.provider.Settings
 import android.text.InputType
 import android.util.Base64
 import android.view.Gravity
+import android.widget.Button
+import android.widget.CheckBox
 import android.widget.EditText
 import android.widget.LinearLayout
 import android.widget.Toast
@@ -130,7 +133,7 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Open Event Logs Screen (Date list -> Day report drill-down)
+        // Open Event Logs Screen
         binding.btnOpenEventLogs.setOnClickListener {
             startActivity(Intent(this, EventLogActivity::class.java))
         }
@@ -148,19 +151,11 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Ringtone Picker
+        // Alarm Settings (Ringtone & Night Quiet Hours Selection)
         binding.btnChangeAlarm.setOnClickListener {
-            val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
-                putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALARM)
-                putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Select Alarm Sound")
-                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
-                putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
-                val currentUri = PreferenceHelper.getCustomAlarmUri(this@MainActivity)
-                if (currentUri != null) {
-                    putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, Uri.parse(currentUri))
-                }
+            showVerifyCurrentPinDialog {
+                showAlarmConfigurationChoiceDialog()
             }
-            ringtonePickerLauncher.launch(intent)
         }
 
         // Remote Camera Snapshot Trigger
@@ -180,6 +175,103 @@ class MainActivity : AppCompatActivity() {
         binding.btnPermissions.setOnClickListener {
             checkAndRequestSystemPermissions()
         }
+    }
+
+    private fun showAlarmConfigurationChoiceDialog() {
+        val options = arrayOf("🎵 Change Alarm Ringtone", "🌙 Configure Night Quiet Hours (Silent Alarm)")
+        AlertDialog.Builder(this)
+            .setTitle("Alarm & Audio Settings")
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> openRingtonePicker()
+                    1 -> showNightQuietHoursDialog()
+                }
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+
+    private fun openRingtonePicker() {
+        val intent = Intent(RingtoneManager.ACTION_RINGTONE_PICKER).apply {
+            putExtra(RingtoneManager.EXTRA_RINGTONE_TYPE, RingtoneManager.TYPE_ALARM)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_TITLE, "Select Alarm Sound")
+            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_DEFAULT, true)
+            putExtra(RingtoneManager.EXTRA_RINGTONE_SHOW_SILENT, false)
+            val currentUri = PreferenceHelper.getCustomAlarmUri(this@MainActivity)
+            if (currentUri != null) {
+                putExtra(RingtoneManager.EXTRA_RINGTONE_EXISTING_URI, Uri.parse(currentUri))
+            }
+        }
+        ringtonePickerLauncher.launch(intent)
+    }
+
+    private fun showNightQuietHoursDialog() {
+        var startH = PreferenceHelper.getNightStartHour(this)
+        var startM = PreferenceHelper.getNightStartMinute(this)
+        var endH = PreferenceHelper.getNightEndHour(this)
+        var endM = PreferenceHelper.getNightEndMinute(this)
+        var isEnabled = PreferenceHelper.isNightQuietEnabled(this)
+
+        val container = LinearLayout(this).apply {
+            orientation = LinearLayout.VERTICAL
+            setPadding(50, 30, 50, 10)
+        }
+
+        val cbEnabled = CheckBox(this).apply {
+            text = "Enable Night Quiet Hours (Silent Sound)"
+            isChecked = isEnabled
+            textSize = 14f
+            setPadding(10, 0, 0, 20)
+        }
+
+        fun formatTime(h: Int, m: Int): String {
+            val amPm = if (h >= 12) "PM" else "AM"
+            val displayHour = when {
+                h == 0 -> 12
+                h > 12 -> h - 12
+                else -> h
+            }
+            return String.format("%02d:%02d %s", displayHour, m, amPm)
+        }
+
+        val btnStart = Button(this).apply {
+            text = "Start Time: ${formatTime(startH, startM)}"
+            setOnClickListener {
+                TimePickerDialog(context, { _, h, m ->
+                    startH = h
+                    startM = m
+                    text = "Start Time: ${formatTime(startH, startM)}"
+                }, startH, startM, false).show()
+            }
+        }
+
+        val btnEnd = Button(this).apply {
+            text = "End Time: ${formatTime(endH, endM)}"
+            setOnClickListener {
+                TimePickerDialog(context, { _, h, m ->
+                    endH = h
+                    endM = m
+                    text = "End Time: ${formatTime(endH, endM)}"
+                }, endH, endM, false).show()
+            }
+        }
+
+        container.addView(cbEnabled)
+        container.addView(btnStart)
+        container.addView(btnEnd)
+
+        AlertDialog.Builder(this)
+            .setTitle("🌙 Night Quiet Hours")
+            .setMessage("During these hours, if a breach occurs, the phone will lock screen but ALARM SOUND will be completely MUTED:")
+            .setView(container)
+            .setPositiveButton("Save") { _, _ ->
+                PreferenceHelper.setNightQuietEnabled(this, cbEnabled.isChecked)
+                PreferenceHelper.setNightQuietTimes(this, startH, startM, endH, endM)
+                val statusStr = if (cbEnabled.isChecked) "Active (${formatTime(startH, startM)} to ${formatTime(endH, endM)})" else "Disabled"
+                Toast.makeText(this, "Night Quiet Hours: $statusStr", Toast.LENGTH_LONG).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun updateMasterSwitchUI(isArmed: Boolean) {
