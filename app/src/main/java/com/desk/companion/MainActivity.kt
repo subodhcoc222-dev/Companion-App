@@ -62,6 +62,39 @@ class MainActivity : AppCompatActivity() {
         observeFirebase()
     }
 
+    override fun onResume() {
+        super.onResume()
+        if (PreferenceHelper.isArmed(this)) {
+            enterKioskMode()
+        }
+    }
+
+    private fun enterKioskMode() {
+        try {
+            val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
+            val adminComponent = ComponentName(this, CompanionDeviceAdminReceiver::class.java)
+
+            if (dpm.isDeviceOwnerApp(packageName)) {
+                dpm.setLockTaskPackages(adminComponent, arrayOf(packageName))
+                dpm.setLockTaskFeatures(adminComponent, DevicePolicyManager.LOCK_TASK_FEATURE_NONE)
+            }
+
+            if (dpm.isLockTaskPermitted(packageName)) {
+                startLockTask()
+            }
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
+    private fun exitKioskMode() {
+        try {
+            stopLockTask()
+        } catch (e: Exception) {
+            e.printStackTrace()
+        }
+    }
+
     private fun checkInitialSetup() {
         if (PreferenceHelper.getMasterPin(this) == null) {
             showSetPinDialog(isFirstTime = true)
@@ -88,7 +121,10 @@ class MainActivity : AppCompatActivity() {
                 updateMasterSwitchUI(true)
                 startWatchdogService()
                 observeFirebase()
-                Toast.makeText(this, "🛡️ Desk Sentry Armed: 24/7 Guard Active", Toast.LENGTH_SHORT).show()
+
+                enterKioskMode()
+
+                Toast.makeText(this, "🛡️ Desk Sentry Armed: Power Menu Blocked", Toast.LENGTH_SHORT).show()
             } else {
                 showDisarmPinDialog()
             }
@@ -294,6 +330,9 @@ class MainActivity : AppCompatActivity() {
                     PreferenceHelper.setArmed(this, false)
                     updateMasterSwitchUI(false)
                     stopService(Intent(this, CompanionWatchdogService::class.java))
+
+                    exitKioskMode()
+
                     Toast.makeText(this, "Desk Companion Disarmed (Safe Mode)", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(this, "Wrong PIN! Sentry Remains Armed.", Toast.LENGTH_SHORT).show()
