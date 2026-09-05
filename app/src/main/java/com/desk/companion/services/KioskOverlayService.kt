@@ -20,7 +20,6 @@ import androidx.cardview.widget.CardView
 import com.desk.companion.R
 import com.desk.companion.utils.PreferenceHelper
 import com.desk.companion.utils.SoundManager
-import java.util.Calendar
 
 class KioskOverlayService : Service() {
 
@@ -46,18 +45,14 @@ class KioskOverlayService : Service() {
         showOverlay()
     }
 
-    private fun isNightTime(): Boolean {
-        val hour = Calendar.getInstance().get(Calendar.HOUR_OF_DAY)
-        return hour >= 23 || hour < 6 // 11:00 PM to 06:00 AM
-    }
-
     private fun showOverlay() {
         if (overlayView != null || !Settings.canDrawOverlays(this)) return
 
         val inflater = LayoutInflater.from(this)
         overlayView = inflater.inflate(R.layout.overlay_lockdown, null)
 
-        val isNight = isNightTime()
+        // Dynamically checks user-configured Night Quiet Hours from PreferenceHelper
+        val isNight = PreferenceHelper.isNightQuietTime(this)
 
         val layoutParams = WindowManager.LayoutParams(
             WindowManager.LayoutParams.MATCH_PARENT,
@@ -66,7 +61,6 @@ class KioskOverlayService : Service() {
                 WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY
             else
                 WindowManager.LayoutParams.TYPE_PHONE,
-            // Keep screen on, full layout, but allow notification drawer pull down from top
             WindowManager.LayoutParams.FLAG_NOT_TOUCH_MODAL or
                     WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
                     WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON or
@@ -95,9 +89,9 @@ class KioskOverlayService : Service() {
             cardReason?.visibility = View.GONE
             tvStatus?.text = "🔒 SENTRY OFFLINE (NIGHT STEALTH LOCK)"
             tvStatus?.setTextColor(Color.parseColor("#475569"))
-            // Silent night mode: No audio alarm
+            // Silent night mode: Screen locks completely, but Audio Alarm remains Muted
         } else {
-            // Day mode: Start Beep or Custom Alarm
+            // Day mode: Start Alert Sound / Siren at 100% volume
             SoundManager.startAlertSound(this)
         }
 
