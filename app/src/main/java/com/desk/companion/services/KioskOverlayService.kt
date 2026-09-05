@@ -51,7 +51,6 @@ class KioskOverlayService : Service() {
         val inflater = LayoutInflater.from(this)
         overlayView = inflater.inflate(R.layout.overlay_lockdown, null)
 
-        // Dynamically checks user-configured Night Quiet Hours from PreferenceHelper
         val isNight = PreferenceHelper.isNightQuietTime(this)
 
         val layoutParams = WindowManager.LayoutParams(
@@ -70,11 +69,10 @@ class KioskOverlayService : Service() {
         ).apply {
             gravity = Gravity.CENTER
             if (isNight) {
-                screenBrightness = 0.01f // Lowest possible brightness during night
+                screenBrightness = 0.01f
             }
         }
 
-        // Night Stealth Mode vs Day Mode handling
         val root = overlayView?.findViewById<View>(R.id.overlayRoot)
         val tvStatus = overlayView?.findViewById<TextView>(R.id.tvLockStatus)
         val cardReason = overlayView?.findViewById<CardView>(R.id.cardReason)
@@ -89,9 +87,7 @@ class KioskOverlayService : Service() {
             cardReason?.visibility = View.GONE
             tvStatus?.text = "🔒 SENTRY OFFLINE (NIGHT STEALTH LOCK)"
             tvStatus?.setTextColor(Color.parseColor("#475569"))
-            // Silent night mode: Screen locks completely, but Audio Alarm remains Muted
         } else {
-            // Day mode: Start Alert Sound / Siren at 100% volume
             SoundManager.startAlertSound(this)
         }
 
