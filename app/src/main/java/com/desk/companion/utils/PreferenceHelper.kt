@@ -58,9 +58,9 @@ object PreferenceHelper {
     fun isNightQuietEnabled(context: Context): Boolean = getPrefs(context).getBoolean(KEY_NIGHT_QUIET_ENABLED, true)
     fun setNightQuietEnabled(context: Context, enabled: Boolean) = getPrefs(context).edit().putBoolean(KEY_NIGHT_QUIET_ENABLED, enabled).apply()
 
-    fun getNightStartHour(context: Context): Int = getPrefs(context).getInt(KEY_NIGHT_START_HOUR, 23) // Default 11 PM
+    fun getNightStartHour(context: Context): Int = getPrefs(context).getInt(KEY_NIGHT_START_HOUR, 23)
     fun getNightStartMinute(context: Context): Int = getPrefs(context).getInt(KEY_NIGHT_START_MINUTE, 0)
-    fun getNightEndHour(context: Context): Int = getPrefs(context).getInt(KEY_NIGHT_END_HOUR, 6) // Default 6 AM
+    fun getNightEndHour(context: Context): Int = getPrefs(context).getInt(KEY_NIGHT_END_HOUR, 6)
     fun getNightEndMinute(context: Context): Int = getPrefs(context).getInt(KEY_NIGHT_END_MINUTE, 0)
 
     fun setNightQuietTimes(context: Context, startH: Int, startM: Int, endH: Int, endM: Int) {
@@ -72,10 +72,6 @@ object PreferenceHelper {
             .apply()
     }
 
-    /**
-     * Checks whether the current moment falls inside the defined Night Quiet Hours.
-     * Accurately handles overnight windows (e.g., 23:00 to 06:00).
-     */
     fun isNightQuietTime(context: Context): Boolean {
         if (!isNightQuietEnabled(context)) return false
 
@@ -85,10 +81,8 @@ object PreferenceHelper {
         val endMinutes = getNightEndHour(context) * 60 + getNightEndMinute(context)
 
         return if (startMinutes < endMinutes) {
-            // Same day window (e.g. 01:00 to 05:00)
             currentMinutes in startMinutes until endMinutes
         } else {
-            // Overnight window (e.g. 23:00 to 06:00)
             currentMinutes >= startMinutes || currentMinutes < endMinutes
         }
     }
