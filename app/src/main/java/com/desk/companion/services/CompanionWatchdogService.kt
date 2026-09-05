@@ -135,12 +135,17 @@ class CompanionWatchdogService : Service() {
 
                 val isCharging = snapshot.child("is_charging").getValue(Boolean::class.java) ?: true
                 val status = snapshot.child("status").getValue(String::class.java) ?: "OFFLINE"
+                val isAlarmActive = snapshot.child("alarm_active").getValue(Boolean::class.java) ?: false
 
-                if (!isCharging) {
+                if (isAlarmActive) {
+                    // 🚨 Camera Phone par Alarm Start -> Companion Phone par turant lockdown & siren
+                    triggerLockdown("🚨 DESK BREACH: Break Bank Exhausted & Alarm Ringing!")
+                } else if (!isCharging) {
                     triggerLockdown("Camera Phone Charger UNPLUGGED!")
                 } else if (status == "OFFLINE") {
                     triggerLockdown("Camera Phone Status set to OFFLINE!")
                 } else {
+                    // Normal hone par overlay automatically dismiss
                     if (PreferenceHelper.isLockdownActive(this@CompanionWatchdogService)) {
                         dismissLockdown(this@CompanionWatchdogService)
                     }
