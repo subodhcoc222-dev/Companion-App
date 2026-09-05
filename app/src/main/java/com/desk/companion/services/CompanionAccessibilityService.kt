@@ -16,25 +16,25 @@ class CompanionAccessibilityService : AccessibilityService() {
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         if (event == null) return
 
-        // Check if Desk Companion is currently ARMED
+        // Sirf tab Power Menu block hoga jab Companion ARMED ho
         if (!PreferenceHelper.isArmed(this)) return
 
         val pkgName = event.packageName?.toString() ?: ""
         val className = event.className?.toString() ?: ""
 
-        // Samsung One UI Power Menu packages & dialogs
+        // Samsung One UI Power Menu packages & system dialogs
         val isSamsungGlobalActions = pkgName == "com.samsung.android.globalactions" ||
-                pkgName == "android" && className.contains("GlobalActions", ignoreCase = true) ||
-                pkgName == "com.android.systemui" && className.contains("GlobalActions", ignoreCase = true)
+                (pkgName == "android" && className.contains("GlobalActions", ignoreCase = true)) ||
+                (pkgName == "com.android.systemui" && className.contains("GlobalActions", ignoreCase = true))
 
         if (isSamsungGlobalActions) {
-            // 1. Instantly dismiss the Power Menu
+            // 1. Power Menu ko turant dismiss karein
             performGlobalAction(GLOBAL_ACTION_BACK)
 
             @Suppress("DEPRECATION")
             sendBroadcast(Intent(Intent.ACTION_CLOSE_SYSTEM_DIALOGS))
 
-            // 2. Alert the user
+            // 2. Screen par alert toast dikhayein
             val now = System.currentTimeMillis()
             if (now - lastToastTime > 2000) {
                 lastToastTime = now
