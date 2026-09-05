@@ -11,6 +11,7 @@ import android.media.RingtoneManager
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.UserManager
 import android.provider.Settings
 import android.text.InputType
 import android.util.Base64
@@ -25,6 +26,7 @@ import androidx.appcompat.app.AlertDialog
 import androidx.appcompat.app.AppCompatActivity
 import com.desk.companion.databinding.ActivityMainBinding
 import com.desk.companion.receivers.CompanionDeviceAdminReceiver
+import com.desk.companion.services.CompanionAccessibilityService
 import com.desk.companion.services.CompanionWatchdogService
 import com.desk.companion.utils.PreferenceHelper
 import com.google.firebase.database.*
@@ -63,36 +65,18 @@ class MainActivity : AppCompatActivity() {
         checkInitialSetup()
         setupUI()
         observeFirebase()
+        enforceDeviceOwnerProtections()
     }
 
-    override fun onResume() {
-        super.onResume()
-        if (PreferenceHelper.isArmed(this)) {
-            enterKioskMode()
-        }
-    }
-
-    private fun enterKioskMode() {
+    private fun enforceDeviceOwnerProtections() {
         try {
             val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
             val adminComponent = ComponentName(this, CompanionDeviceAdminReceiver::class.java)
 
             if (dpm.isDeviceOwnerApp(packageName)) {
-                dpm.setLockTaskPackages(adminComponent, arrayOf(packageName))
-                dpm.setLockTaskFeatures(adminComponent, DevicePolicyManager.LOCK_TASK_FEATURE_NONE)
+                dpm.addUserRestriction(adminComponent, UserManager.DISALLOW_SAFE_BOOT)
+                dpm.setUninstallBlocked(adminComponent, packageName, true)
             }
-
-            if (dpm.isLockTaskPermitted(packageName)) {
-                startLockTask()
-            }
-        } catch (e: Exception) {
-            e.printStackTrace()
-        }
-    }
-
-    private fun exitKioskMode() {
-        try {
-            stopLockTask()
         } catch (e: Exception) {
             e.printStackTrace()
         }
@@ -120,25 +104,29 @@ class MainActivity : AppCompatActivity() {
             if (isSwitchProgrammatic) return@setOnCheckedChangeListener
 
             if (isChecked) {
+                if (!isAccessibilityServiceEnabled()) {
+                    isSwitchProgrammatic = true
+                    binding.switchMaster.isChecked = false
+                    isSwitchProgrammatic = false
+                    promptEnableAccessibility()
+                    return@setOnCheckedChangeListener
+                }
+
                 PreferenceHelper.setArmed(this, true)
                 updateMasterSwitchUI(true)
                 startWatchdogService()
                 observeFirebase()
 
-                enterKioskMode()
-
-                Toast.makeText(this, "🛡️ Desk Sentry Armed: Power Menu Blocked", Toast.LENGTH_SHORT).show()
+                Toast.makeText(this, "🛡️ Desk Sentry Armed: Power Off Blocked (Normal Phone Active)", Toast.LENGTH_LONG).show()
             } else {
                 showDisarmPinDialog()
             }
         }
 
-        // Open Event Logs Screen
         binding.btnOpenEventLogs.setOnClickListener {
             startActivity(Intent(this, EventLogActivity::class.java))
         }
 
-        // Security Configuration Buttons
         binding.btnChangePin.setOnClickListener {
             showVerifyCurrentPinDialog {
                 showSetPinDialog(isFirstTime = false)
@@ -151,14 +139,12 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // Alarm Settings (Ringtone & Night Quiet Hours Selection)
         binding.btnChangeAlarm.setOnClickListener {
             showVerifyCurrentPinDialog {
                 showAlarmConfigurationChoiceDialog()
             }
         }
 
-        // Remote Camera Snapshot Trigger
         binding.btnRequestSnap.setOnClickListener {
             val deviceId = PreferenceHelper.getPairedDeviceId(this)
             if (deviceId.isNotEmpty()) {
@@ -171,10 +157,26 @@ class MainActivity : AppCompatActivity() {
             }
         }
 
-        // System Permissions Check
         binding.btnPermissions.setOnClickListener {
             checkAndRequestSystemPermissions()
         }
+    }
+
+    private fun isAccessibilityServiceEnabled(): Boolean {
+        val expected = ComponentName(this, CompanionAccessibilityService::class.java)
+        val enabled = Settings.Secure.getString(contentResolver, Settings.Secure.ENABLED_ACCESSIBILITY_SERVICES) ?: return false
+        return enabled.contains(expected.flattenToString()) || enabled.contains(expected.flattenToShortString()) || enabled.contains(CompanionAccessibilityService::class.java.simpleName)
+    }
+
+    private fun promptEnableAccessibility() {
+        AlertDialog.Builder(this)
+            .setTitle("🔒 Power Off Blocker Permission")
+            .setMessage("To block the Power Off / Restart menu while Armed, please turn ON 'Desk Companion' in Installed Apps / Accessibility Settings.")
+            .setPositiveButton("Open Settings") { _, _ ->
+                startActivity(Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS))
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
     }
 
     private fun showAlarmConfigurationChoiceDialog() {
@@ -210,7 +212,7 @@ class MainActivity : AppCompatActivity() {
         var startM = PreferenceHelper.getNightStartMinute(this)
         var endH = PreferenceHelper.getNightEndHour(this)
         var endM = PreferenceHelper.getNightEndMinute(this)
-        var isEnabled = PreferenceHelper.isNightQuietEnabled(this)
+        val isEnabled = PreferenceHelper.isNightQuietEnabled(this)
 
         val container = LinearLayout(this).apply {
             orientation = LinearLayout.VERTICAL
@@ -262,7 +264,7 @@ class MainActivity : AppCompatActivity() {
 
         AlertDialog.Builder(this)
             .setTitle("🌙 Night Quiet Hours")
-            .setMessage("During these hours, if a breach occurs, the phone will lock screen but ALARM SOUND will be completely MUTED:")
+            .setMessage("During these hours, if a breach occurs, the screen will lock but ALARM SOUND will be completely MUTED:")
             .setView(container)
             .setPositiveButton("Save") { _, _ ->
                 PreferenceHelper.setNightQuietEnabled(this, cbEnabled.isChecked)
@@ -422,9 +424,6 @@ class MainActivity : AppCompatActivity() {
                     PreferenceHelper.setArmed(this, false)
                     updateMasterSwitchUI(false)
                     stopService(Intent(this, CompanionWatchdogService::class.java))
-
-                    exitKioskMode()
-
                     Toast.makeText(this, "Desk Companion Disarmed (Safe Mode)", Toast.LENGTH_SHORT).show()
                 } else {
                     Toast.makeText(this, "Wrong PIN! Sentry Remains Armed.", Toast.LENGTH_SHORT).show()
@@ -473,14 +472,8 @@ class MainActivity : AppCompatActivity() {
             return
         }
 
-        val dpm = getSystemService(Context.DEVICE_POLICY_SERVICE) as DevicePolicyManager
-        val adminComponent = ComponentName(this, CompanionDeviceAdminReceiver::class.java)
-        if (!dpm.isAdminActive(adminComponent)) {
-            val intent = Intent(DevicePolicyManager.ACTION_ADD_DEVICE_ADMIN).apply {
-                putExtra(DevicePolicyManager.EXTRA_DEVICE_ADMIN, adminComponent)
-                putExtra(DevicePolicyManager.EXTRA_ADD_EXPLANATION, "Protects the Desk Companion app from unauthorized uninstallation.")
-            }
-            startActivity(intent)
+        if (!isAccessibilityServiceEnabled()) {
+            promptEnableAccessibility()
             return
         }
 
